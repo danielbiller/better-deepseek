@@ -13,11 +13,14 @@
   } from "../project-manager.js";
   import { pushConfigToPage } from "../bridge.js";
   import { pickFolderSelection } from "../../lib/utils/folder-picker.js";
+  import { triggerBlobDownload } from "../../lib/utils/download.js";
   import { openNativeFilePicker } from "../files/native-file-input.js";
   import {
     isNativeFilePickerAvailable,
     nativePickFiles,
+    PICKED_BLOB_ENCODING,
     PICK_ERRORS,
+    releasePickedEntry,
   } from "../../platform/android-file-picker.js";
   import {
     supportsLocalDirectoryLinking,
@@ -161,18 +164,29 @@
         }
         if (!fileInput) return;
         const dataTransfer = new DataTransfer();
+        let binarySkipped = 0;
         for (const file of files) {
+          // Project files are a text workspace; binary documents (PDF, Office) stay out of it.
+          if (file.encoding === PICKED_BLOB_ENCODING) {
+            binarySkipped += 1;
+            releasePickedEntry(file);
+            continue;
+          }
           const blob = new Blob([file.content], { type: "text/plain" });
           dataTransfer.items.add(
             new File([blob], file.name, { type: "text/plain" }),
           );
         }
+        if (dataTransfer.files.length === 0) {
+          if (appState.ui) appState.ui.showToast(t("projectsManager.noFilesPicked"));
+          return;
+        }
         fileInput.files = dataTransfer.files;
         fileInput.dispatchEvent(new Event("change", { bubbles: true }));
-        if (skipped.length > 0 && appState.ui) {
+        if (skipped.length + binarySkipped > 0 && appState.ui) {
           appState.ui.showToast(t("projectsManager.someFilesSkipped", {
-            skipped: skipped.length,
-            total: skipped.length + files.length,
+            skipped: skipped.length + binarySkipped,
+            total: skipped.length + binarySkipped + dataTransfer.files.length,
           }));
         }
       } catch (err) {
@@ -448,12 +462,7 @@
 
   function exportFile(file) {
     const blob = new Blob([file.content], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = file.name.split("/").pop();
-    a.click();
-    URL.revokeObjectURL(url);
+    triggerBlobDownload(blob, file.name.split("/").pop());
   }
 
   function exportAll() {
@@ -466,13 +475,8 @@
       text += file.content;
     }
     const blob = new Blob([text], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
     const safeName = selectedProject.name.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase();
-    a.download = `${safeName}_all_files.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    triggerBlobDownload(blob, `${safeName}_all_files.txt`);
   }
 </script>
 

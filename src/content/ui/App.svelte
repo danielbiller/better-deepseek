@@ -6,6 +6,7 @@
   import DeepResearchRevisionPanel from "./DeepResearchRevisionPanel.svelte";
   import WhatsNewModal from "./WhatsNewModal.svelte";
   import SelectionOverlay from "./SelectionOverlay.svelte";
+  import QuoteContext from "./QuoteContext.svelte";
   import StatusBanner from "./StatusBanner.svelte";
   import AnnouncementBanner from "./AnnouncementBanner.svelte";
   import PreviewPanel from "./PreviewPanel.svelte";
@@ -213,6 +214,15 @@
   window.addEventListener("bds:open-live-mode", () => {
     openLiveMode();
   });
+
+  window.addEventListener("bds:open-drawer", (e) => {
+    drawerOpen = true;
+    if (e.detail?.section === "skills") {
+      setTimeout(() => {
+        document.querySelector("#bds-skill-list")?.scrollIntoView({ behavior: "smooth" });
+      }, 150);
+    }
+  });
 </script>
 
 <button id="bds-toggle" type="button" onclick={toggleDrawer} aria-label="Better DeepSeek">
@@ -247,6 +257,7 @@
 {/if}
 
 <SelectionOverlay />
+<QuoteContext />
 <StatusBanner />
 <AnnouncementBanner />
 <PreviewPanel

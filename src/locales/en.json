@@ -1,6 +1,43 @@
 {
   "updatedAt": "2026-09-23T00:00:00Z",
   "messages": {
+    "configSync": {
+      "messageText": "Syncing my Better DeepSeek settings to another device.",
+      "exportButton": "Export to chat",
+      "exportTitle": "Export settings to chat",
+      "exportIntro": "Sends a compact backup as a hidden block inside your next message, so another device can pick it up from the same conversation. The model never writes this data or sees it as text. Project files are left out — they can be megabytes and belong in the file export.",
+      "passwordPlaceholderOptional": "Passphrase (optional)",
+      "passwordOptionalHint": "Without a passphrase, anyone who can read this conversation can read the backup, so API keys and tokens are left out. With one, the block is encrypted and credentials can travel.",
+      "passwordTooShort": "Use at least {{min}} characters — a shorter passphrase is not protection.",
+      "includeSecrets": "Include API keys and tokens",
+      "includeSecretsHint": "Only possible with a passphrase. The other device needs that passphrase to recover them, and it cannot be reset.",
+      "send": "Send",
+      "sent": "Backup sent. Open this conversation on the other device to apply it.",
+      "sendFailed": "Could not send the backup. Nothing was changed — try again.",
+      "tooLarge": "The backup is {{size}} — too large for a chat message. Largest parts: {{sections}}. Use the file export instead.",
+      "cardTitle": "Better DeepSeek settings backup",
+      "cardPlain": "not encrypted",
+      "cardEncrypted": "encrypted",
+      "cardRedacted": "{{count}} credentials removed",
+      "decoding": "Reading…",
+      "download": "Download",
+      "apply": "Apply…",
+      "applied": "Applied",
+      "passwordHint": "This backup is encrypted. Enter its passphrase to read it.",
+      "passwordPlaceholder": "Passphrase",
+      "unlock": "Unlock",
+      "sectionsHint": "Choose what to replace on this device:",
+      "backupFirst": "Download my current settings first",
+      "applyWarning": "Selected sections are replaced, not merged. Anything that exists only on this device in those sections will be overwritten.",
+      "cancel": "Cancel",
+      "confirmApply": "Apply",
+      "appliedToast": "Applied {{count}} section(s).",
+      "errorPasswordRequired": "Passphrase required.",
+      "errorPasswordWrong": "Wrong passphrase.",
+      "errorChecksum": "The backup is incomplete or was altered — it was not applied.",
+      "errorVersion": "This backup was made by a newer version.",
+      "errorFormat": "This backup could not be read."
+    },
     "common": {
       "save": "Save",
       "cancel": "Cancel",
@@ -172,6 +209,8 @@
       "loadAllHistoryHint": "Scrolls to the top of the conversation to trigger DeepSeek's lazy-load, ensuring all messages are available for export and price calculation. May be slow for long conversations. Disabled by default.",
       "showTimestamps": "Show message timestamps",
       "showTimestampsHint": "Display the exact time each message was sent or received in the chat.",
+      "contextMenuEnabled": "Show browser context menu items",
+      "contextMenuEnabledHint": "Adds \"Ask DeepSeek\" and \"Summarize with DeepSeek\" to the browser's right-click menu. Turn off to keep the native menu untouched.",
       "save": "Save Settings",
       "ragChunks": "Max RAG Chunks to Inject",
       "ragChunks3": "3 chunks (~600 words)",
@@ -210,7 +249,6 @@
       "saveAsSnippet": "Save as Snippet",
       "manageSnippets": "Manage CSS Snippets",
       "restore": "Restore",
-      "delete": "Delete",
       "enterSnippetName": "Enter snippet name:",
       "snippetSaved": "Snippet saved!",
       "snippetDeleted": "Snippet deleted",
@@ -224,7 +262,11 @@
       "advancedSearchPlaceholder": "Search settings...",
       "advancedNoResults": "No matching settings found.",
       "disableTipBox": "Disable Tip Box",
-      "disableTipBoxHint": "Shows a random tip each time you open the drawer."
+      "disableTipBoxHint": "Shows a random tip each time you open the drawer.",
+      "resetSkillsOnNewChat": "Reset Skills on New Chat",
+      "resetSkillsOnNewChatHint": "Automatically turns off all active skills when starting a new conversation.",
+      "showSelectedSkillsOnComposer": "Show Selected Skills on Composer",
+      "showSelectedSkillsOnComposerHint": "Shows an indicator chip on the composer toolbar when skills are active."
     },
     "skillList": {
       "title": "Skill Set",
@@ -244,7 +286,8 @@
       "removed": "Skill removed.",
       "saved": "Skill saved.",
       "importedCount": "{{count}} skill(s) imported.",
-      "importFailed": "Failed to import skills. Invalid file format."
+      "importFailed": "Failed to import skills. Invalid file format.",
+      "settingsTitle": "Skill Settings"
     },
     "characterList": {
       "title": "RP Characters",
@@ -362,6 +405,14 @@
       "cancel": "Cancel",
       "exportHint": "Please select the messages you want to export first."
     },
+    "quoteContext": {
+      "addContext": "Add context",
+      "added": "Added as context",
+      "hint": "Attached to your next message",
+      "remove": "Remove context",
+      "expand": "Show full excerpt",
+      "collapse": "Collapse excerpt"
+    },
     "questionPanel": {
       "of": "{{current}} of {{total}}",
       "dismiss": "Dismiss",
@@ -390,8 +441,8 @@
       "dismiss": "Dismiss"
     },
     "attachMenu": {
-      "noFilesPicked": "Nothing was attached - the selected file(s) are unsupported, too large (over 2 MB), or binary.",
-      "someFilesSkipped": "{{skipped}} of {{total}} selected file(s) could not be attached (unsupported, too large, or binary).",
+      "noFilesPicked": "Nothing was attached - the selected file(s) were skipped (too large, unreadable, or not supported here).",
+      "someFilesSkipped": "{{skipped}} of {{total}} selected file(s) could not be attached (too large, unreadable, or not supported here).",
       "folderNoTextFiles": "No supported text files were found in the selected folder.",
       "pickTimeout": "The file picker did not return a result. Please try again.",
       "imagesRequireVision": "Images can only be attached in Vision mode.",
@@ -435,9 +486,6 @@
       "noProjectSelected": "No project selected",
       "webImportTitle": "Fetch Web Page",
       "webPlaceholder": "https://example.com/article",
-      "close": "Close",
-      "fetch": "Fetch",
-      "fetching": "Fetching...",
       "noSpeechRecognition": "Browser does not support Speech Recognition.",
       "voiceError": "Voice Error: {{msg}}",
       "noInputField": "Could not find input field.",
@@ -480,6 +528,8 @@
       "luaRunner": "Lua Runner",
       "rubyRunner": "Ruby Runner",
       "download": "Download",
+      "copyCode": "Copy Code",
+      "copied": "Copied!",
       "placeholder": "Enter your code here...",
       "running": "Running...",
       "runPython": "▶ Run Python",
@@ -542,6 +592,8 @@
       "aiWantsToRun": "AI wants to run {{lang}} code",
       "safeSandbox": "This will execute in a safe sandbox.",
       "runCode": "▶ Run Code",
+      "copyCode": "Copy",
+      "copied": "Copied!",
       "reject": "✕ Reject",
       "running": "Running...",
       "finished": "Finished",
@@ -674,6 +726,8 @@
     },
     "downloadCard": {
       "download": "Download",
+      "copyCode": "Copy",
+      "copied": "Copied!",
       "viewFiles": "View files",
       "hideFiles": "Hide files",
       "showCode": "Show code",
@@ -809,6 +863,7 @@
     "ragPreview": {
       "title": "RAG matched files",
       "moreFiles": "+{{count}} more files",
+      "showAll": "+{{count}} more",
       "lines": "Lines {{start}}–{{end}}"
     },
     "mcp": {
@@ -936,7 +991,9 @@
       "cmdHint": "/mycommand (lowercase, no spaces)",
       "add": "Add",
       "categorySnippet": "snippet",
-      "autocompleteHint": "Tab \u21b9 complete \u00b7 \u21b5 execute",
+      "autocompleteHint": "Tab ↹ complete · ↵ execute",
+      "categorySkill": "skill",
+      "mentionHint": "Tab ↹ insert · this message only",
       "cmdSearchDesc": "Search the web and inject results into chat",
       "cmdSearchUsage": "/search <query>",
       "cmdNewDesc": "Start a new conversation",
@@ -1477,8 +1534,8 @@
       "columnOptions": "Column options",
       "hideRow": "Hide row",
       "manageColumnsRows": "Manage columns & rows",
-      "sortAsc": "\u25B2 Sort A \u2192 Z",
-      "sortDesc": "\u25BC Sort Z \u2192 A",
+      "sortAsc": "▲ Sort A → Z",
+      "sortDesc": "▼ Sort Z → A",
       "hideColumn": "Hide column",
       "showColumn": "Show column",
       "columns": "Columns",
@@ -1490,8 +1547,6 @@
       "searchEngineWarning": "Shared conversations may be discovered and indexed by search engines."
     },
     "tips": {
-      "title": "\uD83D\uDCA1 Tip",
-      "disableInSettings": "You can disable this from Settings.",
       "0": "To export a chat, click the ... button next to the session in the chat history.",
       "1": "You can disable this tip box from Settings.",
       "2": "You can export your current settings and data. Just visit the Advanced Settings section.",
@@ -1504,12 +1559,26 @@
       "9": "You can customize the interface however you like with Custom CSS.",
       "10": "We want to add more language support to Better DeepSeek. If you want to add your own language, check it out <a href=\"https://github.com/EdgeTypE/better-deepseek/blob/main/LOCALIZATION.md\" target=\"_blank\" rel=\"noopener noreferrer\">here</a>. Also, if you notice any translation errors, you can fix them.",
       "11": "You can assign tags to any chat session by clicking the ... button in the session history. Then use those tags to quickly search or filter your conversations.",
-      "12": "You can create new skills or characters just by asking DeepSeek. Simply tell it what you need."
+      "12": "You can create new skills or characters just by asking DeepSeek. Simply tell it what you need.",
+      "title": "💡 Tip",
+      "disableInSettings": "You can disable this from Settings."
     },
     "contextMenu": {
       "askDeepSeek": "Ask DeepSeek",
       "summarizePage": "Summarize with DeepSeek",
       "summarizePrompt": "Please summarize this webpage: {{url}}"
+    },
+    "skillChip": {
+      "activeCount": "{{count}} Skills",
+      "ariaLabelSingle": "Active skill: {{name}}",
+      "ariaLabelMultiple": "{{count}} skills active",
+      "disableSingle": "Disable {{name}}",
+      "disableAll": "Disable all skills",
+      "disabledToast": "Skill \"{{name}}\" disabled",
+      "allDisabledToast": "{{count}} skill(s) disabled",
+      "panelTitle": "Active Skills",
+      "closePanel": "Close",
+      "manageInDrawer": "Manage Skills"
     }
   }
 }

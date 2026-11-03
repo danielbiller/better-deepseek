@@ -34,9 +34,13 @@ import { initDeepResearchRuntime } from "./deep-research.js";
 import { loadDeepCodeState } from "./deep-code.js";
 import { i18n } from "../lib/i18n.svelte.js";
 import { remoteConfig, REMOTE_CONFIG_EVENT, detectModelType } from "../lib/remote-config.svelte.js";
+import { refreshRemoteConfigIfDue, DEFAULT_FETCH_INTERVAL_MS } from "../lib/remote-config-refresh.js";
 import { STORAGE_KEYS, CSS_PRESETS, EMBEDDED_PRICING } from "../lib/constants.js";
 import { loadAllHistory, retainOnlyHistorySession } from "./load-all-history.js";
 import { stopVoicePlayback } from "./message-processor.svelte.js";
+// keep-awake only depends on message-processor, so importing it here leaves the
+// module evaluation order of everything above untouched.
+import { startKeepAwakeWatcher } from "./keep-awake.js";
 
 const CONTENT_BOOTSTRAP_KEY = "__bdsContentBootstrapped";
 
@@ -47,9 +51,42 @@ if (!window[CONTENT_BOOTSTRAP_KEY]) {
   });
 }
 
+/**
+ * Pull remote config on the Android build.
+ *
+ * Chrome/Firefox get it from the background service worker, which the Android
+ * target does not build (see `build.js`), so without this the app would run on
+ * the built-in defaults forever and remote-config changes — including the
+ * `targets.android` composer-button set — would never arrive. Fire-and-forget:
+ * the first paint uses whatever was stored last session, and the mounted UI
+ * re-evaluates on `bds:remote-config-updated`.
+ */
+async function refreshRemoteConfigOnAndroid() {
+  if (process.env.BDS_TARGET !== "android") return;
+  if (!chrome?.runtime?.sendMessage || !chrome?.storage?.local) return;
+
+  const configured = Number(remoteConfig.getConfig("remoteConfig.fetchIntervalMs"));
+  const intervalMs = configured > 0 ? configured : DEFAULT_FETCH_INTERVAL_MS;
+
+  const { fetched, config, reason } = await refreshRemoteConfigIfDue({
+    storage: chrome.storage.local,
+    sendMessage: (message) => chrome.runtime.sendMessage(message),
+    intervalMs,
+  });
+  if (fetched && config) {
+    remoteConfig.syncFromStorage(config);
+    state.remoteConfig = remoteConfig.raw;
+  } else if (reason && reason !== "fresh") {
+    console.warn("[BDS] Android remote-config refresh skipped:", reason);
+  }
+}
+
 async function init() {
   await waitForBody();
   await loadStateFromStorage();
+  refreshRemoteConfigOnAndroid().catch((error) => {
+    console.warn("[BDS] Android remote-config refresh failed:", error);
+  });
 
   if (typeof localStorage !== "undefined" && localStorage.getItem("bds:devlog")) {
     setDevLogging(true);
@@ -89,6 +126,7 @@ async function init() {
   });
   startStatusMonitor();
   startThemeWatcher();
+  startKeepAwakeWatcher();
 
   // Keep state.remoteConfig in sync when the RemoteConfigManager updates
   window.addEventListener(REMOTE_CONFIG_EVENT, () => {
@@ -245,6 +283,21 @@ async function init() {
 
     if ((state.settings.loadAllHistoryOnSession || state.settings.showTimestamps) && location.href.includes("/chat/s/")) {
       loadAllHistory();
+    }
+
+    if (!newId && state.settings.resetSkillsOnNewChat && Array.isArray(state.skills)) {
+      let changed = false;
+      for (const skill of state.skills) {
+        if (skill.active) {
+          skill.active = false;
+          changed = true;
+        }
+      }
+      if (changed) {
+        chrome.storage?.local?.set?.({ [STORAGE_KEYS.skills]: state.skills });
+        pushConfigToPage();
+        window.dispatchEvent(new CustomEvent("bds:skillsChanged"));
+      }
     }
   });
 }

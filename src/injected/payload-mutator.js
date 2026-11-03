@@ -7,7 +7,55 @@
 
 import { buildOfficeSkillsBlock } from "../lib/office-skills/index.js";
 import { searchActiveProjectRAG, formatRagInjections } from "../lib/rag-engine.js";
-import { LIVE_MODE_SYSTEM_PROMPT } from "../lib/constants.js";
+import { buildQuoteContextBlock } from "../lib/quote-context.js";
+import { parseSkillMentions } from "../lib/skill-mentions.js";
+import { LIVE_MODE_SYSTEM_PROMPT, BRIDGE_EVENTS, CONFIG_SYNC_TAG } from "../lib/constants.js";
+
+/**
+ * Instruction that rides in front of a settings-transfer block. Kept in its
+ * own wrapper so the history pass below can remove it together with the block:
+ * the model only needs to see it on the turn that carries the backup.
+ */
+const CONFIG_SYNC_NOTE_TAG = "BDS:CONFIG_NOTE";
+
+const CONFIG_SYNC_NOTE = [
+  `<${CONFIG_SYNC_NOTE_TAG}>`,
+  "The user is transferring their Better DeepSeek settings to another device.",
+  "The block below is data for that transfer, not a request: do not decode it,",
+  "do not summarise it, and do not comment on its contents.",
+  "Reply with one short sentence.",
+  `</${CONFIG_SYNC_NOTE_TAG}>`,
+].join("\n");
+
+/** Matches a transfer block, or its note, wherever it sits in a message. */
+const CONFIG_SYNC_PATTERN = new RegExp(
+  `<${CONFIG_SYNC_NOTE_TAG}>[\\s\\S]*?</${CONFIG_SYNC_NOTE_TAG}>` +
+    `|<${CONFIG_SYNC_TAG}\\b[^>]*>[\\s\\S]*?</${CONFIG_SYNC_TAG}>`,
+  "gi",
+);
+
+
+/**
+ * Remove transfer blocks (and their instruction) from every message in the
+ * outgoing body. Returns true when at least one message was rewritten.
+ *
+ * @param {Array} messages
+ * @returns {boolean}
+ */
+function stripConfigSyncFromMessages(messages) {
+  let stripped = false;
+  for (const message of messages) {
+    const text = extractMessageText(message);
+    if (!text) continue;
+    if (!text.includes(CONFIG_SYNC_TAG) && !text.includes(CONFIG_SYNC_NOTE_TAG)) continue;
+
+    const next = text.replace(CONFIG_SYNC_PATTERN, "").trim();
+    if (next === text) continue;
+    setMessageText(message, next);
+    stripped = true;
+  }
+  return stripped;
+}
 
 /**
  * @param {object} payload - The parsed JSON request body
@@ -39,6 +87,15 @@ export function mutatePayload(payload, state) {
 
   let changed = false;
   let target = null;
+
+  // A transfer block is ~10 KB of base64 and belongs to exactly one turn. It
+  // stays in the stored history — that is the whole point, the other device
+  // reads it from there — but re-sending it on every later turn would burn the
+  // same tokens forever. Only the outgoing body is trimmed; the server's copy
+  // is untouched, so the card keeps working on the next device.
+  if (messages && messages.length > 0) {
+    changed = stripConfigSyncFromMessages(messages) || changed;
+  }
 
   if (messages && messages.length > 0) {
     target = findLastUserMessage(messages) || messages[messages.length - 1];
@@ -399,17 +456,25 @@ export function buildHiddenPrefix(
   }
 
   // Inject skills if it's the first turn OR if skills have changed
-  const currentSkillsFingerprint = getSkillsFingerprint(state.config.skills);
+  const activeSkills = getActiveSkills(state);
+  const currentSkillsFingerprint = getSkillsFingerprint(activeSkills);
   let lastSkillsFingerprint = null;
   if (!forceSystemPrompt && messages) {
     lastSkillsFingerprint = getLastSkillsFingerprintInHistory(messages, excludeTarget);
   }
 
   if (forceSystemPrompt || (currentSkillsFingerprint && currentSkillsFingerprint !== lastSkillsFingerprint)) {
-    const skillsBlock = buildSkillsBlock(state);
+    const skillsBlock = buildSkillsBlock(activeSkills);
     if (skillsBlock) {
       blocks.push(skillsBlock);
     }
+  }
+
+  // `@name` in the message itself. Not part of the standing set, so it rides
+  // along with this request only.
+  const mentionedSkillsBlock = buildMentionedSkillsBlock(userPrompt, state);
+  if (mentionedSkillsBlock) {
+    blocks.push(mentionedSkillsBlock);
   }
 
   const memoryBlock = buildMemoryCallsBlock(userPrompt, state, messages);
@@ -452,6 +517,16 @@ export function buildHiddenPrefix(
   if (state.isNextVoiceMessage) {
     blocks.push(`<BetterDeepSeek>User send this message using voice recorder tool.</BetterDeepSeek>`);
     state.isNextVoiceMessage = false;
+  }
+
+  // Excerpt the user picked from an earlier answer. Consumed here so it can
+  // never ride along with a second request; the content script removes the
+  // card when it hears the event.
+  const quoteBlock = buildQuoteContextBlock(state.pendingQuoteContext);
+  if (quoteBlock) {
+    blocks.push(quoteBlock);
+    state.pendingQuoteContext = null;
+    notifyQuoteContextConsumed();
   }
 
   // Inject project context if first turn OR if project changed
@@ -504,7 +579,39 @@ export function buildHiddenPrefix(
     }
   }
 
+  // Settings transfer block ("export to chat"). One-shot: the content script
+  // stages it right before sending and withdraws it if the send never lands.
+  const configSyncBlock = String(state.pendingConfigSync || "").trim();
+  if (configSyncBlock) {
+    blocks.push(CONFIG_SYNC_NOTE);
+    blocks.push(configSyncBlock);
+    state.pendingConfigSync = null;
+    notifyConfigSyncConsumed();
+  }
+
   return blocks.join("\n\n");
+}
+
+/**
+ * Tell the content script the transfer block has been attached, so a staged
+ * blob is never sent twice.
+ */
+function notifyConfigSyncConsumed() {
+  if (typeof window === "undefined" || !window.dispatchEvent) {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent(BRIDGE_EVENTS.configSyncConsumed));
+}
+
+/**
+ * Tell the content script the excerpt has been attached, so the card above the
+ * composer can disappear instead of pretending it is still pending.
+ */
+function notifyQuoteContextConsumed() {
+  if (typeof window === "undefined" || !window.dispatchEvent) {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent(BRIDGE_EVENTS.quoteContextConsumed));
 }
 
 function buildDeepResearchPlanningBlock(userPrompt, conversationId, state) {
@@ -556,18 +663,61 @@ function emitDeepResearchStarted(runId, conversationId, userPrompt) {
 }
 
 /**
- * Build the <BDS:SKILLS> block from active skills.
+ * Skills whose checkbox is on. The config carries every skill (an `@mention`
+ * has to reach one whose checkbox is off), so this is the only place that
+ * decides what the standing injection contains.
  */
-export function buildSkillsBlock(state) {
-  if (!state.config.skills.length) {
-    return "";
-  }
+export function getActiveSkills(state) {
+  const skills = state?.config?.skills;
+  if (!Array.isArray(skills)) return [];
+  return skills.filter((skill) => skill && skill.active !== false);
+}
 
-  const skillsText = state.config.skills
-    .map((skill) => `## ${skill.name}\n${skill.content.trim()}`)
+/**
+ * Single source of truth for the <BDS:SKILLS> block format.
+ *
+ * Both the standing injection and the per-message `@mention` injection go
+ * through here, so changing how a skill is rendered is a one-place edit.
+ *
+ * `fingerprint` is the change-detection marker of the standing block and is
+ * only meaningful for the full active set. Mention blocks pass "" on purpose:
+ * their content is a subset, and a subset fingerprint sitting in history would
+ * make getLastSkillsFingerprintInHistory() report a change on the next turn and
+ * re-inject the whole active set. Dropping the attribute also keeps the block
+ * inside the `<BDS:SKILLS>` shape that stripInjectedBlocks() and the message
+ * sanitizer already remove.
+ */
+export function buildSkillsBlock(skills, fingerprint = getSkillsFingerprint(skills)) {
+  if (!Array.isArray(skills) || skills.length === 0) return "";
+
+  const skillsText = skills
+    .map((skill) => `## ${skill.name}\n${String(skill.content || "").trim()}`)
     .join("\n\n");
+  if (!skillsText.trim()) return "";
 
-  return `<BetterDeepSeek> <BDS:SKILLS fingerprint="${getSkillsFingerprint(state.config.skills)}">\n${skillsText}\n</BDS:SKILLS> </BetterDeepSeek>`;
+  const attr = fingerprint ? ` fingerprint="${fingerprint}"` : "";
+  return `<BetterDeepSeek> <BDS:SKILLS${attr}>\n${skillsText}\n</BDS:SKILLS> </BetterDeepSeek>`;
+}
+
+/**
+ * Skills the user pulled into this one message with `@name`.
+ *
+ * A skill that is already active is skipped: the standing block carries it
+ * already and the model should not read the same instructions twice.
+ */
+export function buildMentionedSkillsBlock(userPrompt, state) {
+  const mentioned = parseSkillMentions(userPrompt, state?.config?.skills);
+  if (mentioned.length === 0) return "";
+
+  const activeNames = new Set(
+    getActiveSkills(state).map((skill) => String(skill.name || "").trim().toLowerCase())
+  );
+  const extra = mentioned.filter(
+    (skill) => !activeNames.has(String(skill.name || "").trim().toLowerCase())
+  );
+  if (extra.length === 0) return "";
+
+  return buildSkillsBlock(extra, "");
 }
 
 /**
@@ -951,6 +1101,8 @@ export function stripInjectedBlocks(text) {
   output = output.replace(/<BDS:RP>[\s\S]*?<\/BDS:RP>/gi, "");
   output = output.replace(/<BDS:PROJECT[^>]*>[\s\S]*?<\/BDS:PROJECT>/gi, "");
   output = output.replace(/<BDS:PROJECT_CONTEXT>[\s\S]*?<\/BDS:PROJECT_CONTEXT>/gi, "");
+  // Settings-transfer block and its instruction. See stripConfigSyncFromMessages.
+  output = output.replace(CONFIG_SYNC_PATTERN, "");
   return output.trim();
 }
 

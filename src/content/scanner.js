@@ -18,6 +18,7 @@ import ExpandToggle from "./ui/ExpandToggle.svelte";
 import RagPreview from "./ui/RagPreview.svelte";
 import DeepResearchToggle from "./ui/DeepResearchToggle.svelte";
 import DeepCodeToggle from "./ui/DeepCodeToggle.svelte";
+import ActiveSkillsChip from "./ui/ActiveSkillsChip.svelte";
 import { injectSearchInput } from "./ui/SidebarSearch.js";
 import { checkPendingExport } from "./tools/pending-export.js";
 import { hideTagsInSidebar, hideTagsInHeader, hideBdsTagsInPopovers } from "./tags/tag-hider.js";
@@ -29,6 +30,7 @@ import { isNativeComposerModeToggle } from "../lib/composer-dom.js";
 import { REMOTE_CONFIG_EVENT } from "../lib/remote-config.svelte.js";
 import { tryExecuteRawInput } from "./commands/executor.js";
 import { checkPendingHandoff } from "./commands/context-handoff.js";
+import { ensureConfigSyncCards } from "./config-sync/card.js";
 import Autocomplete from "./commands/Autocomplete.svelte";
 import CommandsHelp from "./commands/CommandsHelp.svelte";
 
@@ -491,6 +493,10 @@ function scanPage() {
     hideTagsInHeader();
     hideBdsTagsInPopovers();
     injectShareDialogWarning();
+    // Cheap after the first pass: it only re-anchors cards whose message left
+    // the DOM, and reads the history cache once per session (plus a short retry
+    // window after each new turn).
+    ensureConfigSyncCards(knownNodes.length);
   });
 }
 
@@ -615,6 +621,19 @@ export function scanInputArea() {
     unmountComposerMount("bds-deep-code-mount");
   }
 
+  const skillChipMountPoint = ensureComposerMount(
+    deepResearchWrapper,
+    "bds-skill-chip-mount",
+    ".bds-skill-chip",
+    insertBeforeNode,
+  );
+  if (!skillChipMountPoint.dataset.bdsMounted) {
+    skillChipMountPoint.__bdsInstance = mount(ActiveSkillsChip, {
+      target: skillChipMountPoint,
+    });
+    skillChipMountPoint.dataset.bdsMounted = "1";
+  }
+
   if (!fileInput || !wrapper) {
     markComposerControlsMounted(deepResearchWrapper, wrapper);
     return;
@@ -651,16 +670,7 @@ export function scanInputArea() {
     toggleMountPoint.dataset.bdsMounted = "1";
   }
 
-  const ragMountPoint = ensureComposerMount(
-    wrapper,
-    "bds-rag-preview-mount",
-    ".bds-rag-preview",
-    fileInput,
-  );
-  if (!ragMountPoint.dataset.bdsMounted) {
-    mount(RagPreview, { target: ragMountPoint });
-    ragMountPoint.dataset.bdsMounted = "1";
-  }
+  mountRagPreview(wrapper, fileInput);
 
   markComposerControlsMounted(wrapper);
 }
@@ -959,6 +969,7 @@ function findComposerInsertAnchor(wrapper) {
   return Array.from(wrapper.children).find((child) =>
     !child.classList?.contains("bds-deep-research-mount") &&
     !child.classList?.contains("bds-deep-code-mount") &&
+    !child.classList?.contains("bds-skill-chip-mount") &&
     !child.closest?.("#bds-root")
   ) || null;
 }
@@ -972,6 +983,7 @@ function findNativeFileInputTrigger(fileInput) {
   if (
     candidate.classList?.contains("bds-deep-research-mount") ||
     candidate.classList?.contains("bds-deep-code-mount") ||
+    candidate.classList?.contains("bds-skill-chip-mount") ||
     candidate.classList?.contains("bds-attach-menu-mount") ||
     candidate.classList?.contains("bds-expand-toggle-mount") ||
     candidate.classList?.contains("bds-rag-preview-mount")
@@ -1010,12 +1022,52 @@ function unmountComposerMount(className) {
   delete el.dataset.bdsMounted;
 }
 
+/**
+ * The RAG preview is the one composer component that does NOT live inside its
+ * mount point: it moves its own root into the chat container, above the
+ * composer, because the composer row is a tight flex line.
+ *
+ * That breaks the `data-bds-mounted` guard. The native composer is re-created
+ * on most re-renders, so `ensureComposerMount` builds a fresh, empty mount
+ * point while the previous panel — teleported out of the old one — is still in
+ * the chat container. Guarding on the mount point therefore mounted a new copy
+ * on every pass and the copies stacked up above the composer (#197).
+ *
+ * Guard on the panel itself instead: keep the live instance and only re-mount
+ * when its DOM has actually left the document (conversation navigation).
+ */
+let ragPreviewInstance = null;
+
+function mountRagPreview(wrapper, beforeNode) {
+  if (ragPreviewInstance && document.querySelector(".bds-rag-preview")) {
+    return;
+  }
+
+  if (ragPreviewInstance) {
+    try {
+      unmount(ragPreviewInstance);
+    } catch (e) {
+      console.warn("[BDS] Failed to unmount RAG preview:", e);
+    }
+    ragPreviewInstance = null;
+  }
+
+  const host = ensureComposerMount(
+    wrapper,
+    "bds-rag-preview-mount",
+    ".bds-rag-preview",
+    beforeNode,
+  );
+  ragPreviewInstance = mount(RagPreview, { target: host });
+  host.dataset.bdsMounted = "1";
+}
+
 function ensureComposerMount(wrapper, className, descendantSelector, beforeNode) {
   let mountPoint = Array.from(wrapper.children).find((child) =>
     child.classList && child.classList.contains(className)
   );
 
-  if (!mountPoint && (className === "bds-deep-research-mount" || className === "bds-deep-code-mount")) {
+  if (!mountPoint && (className === "bds-deep-research-mount" || className === "bds-deep-code-mount" || className === "bds-skill-chip-mount")) {
     mountPoint = document.querySelector(`.${className}`);
   }
 

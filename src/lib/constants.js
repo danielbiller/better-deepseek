@@ -36,7 +36,27 @@ export const BRIDGE_EVENTS = {
   requestConfig: "bds:request-config",
   networkState: "bds:network-state",
   markVoiceMessage: "bds:mark-voice-message",
+  /** One-shot excerpt the user picked from an answer; consumed by the next request. */
+  quoteContext: "bds:quote-context",
+  /** Emitted by the injected script once the excerpt has been attached. */
+  quoteContextConsumed: "bds:quote-context-consumed",
+  /**
+   * One-shot settings-transfer block. The content script stages the encoded
+   * blob; the injected script prepends it to the next request body and clears
+   * it, exactly like the quote excerpt.
+   */
+  configSyncStage: "bds:config-sync-stage",
+  /** Emitted by the injected script once the transfer block has been attached. */
+  configSyncConsumed: "bds:config-sync-consumed",
 };
+
+/**
+ * Tag that carries a settings backup inside a chat message.
+ *
+ * Declared here (not in `lib/config-sync.js`) because the injected bundle must
+ * read it without pulling that module's fflate/crypto imports along.
+ */
+export const CONFIG_SYNC_TAG = "BDS:CONFIG";
 
 // ── Versioning ──
 export const SYSTEM_PROMPT_TEMPLATE_VERSION = 16;
@@ -995,7 +1015,6 @@ export const DEFAULT_SETTINGS = {
   locale: "en",
   syncLocale: true,
   processGitignoreOnUpload: true,
-  collapseLongUserMessages: true,
   keepReasoningBlocksOpen: true,
   injectSystemDateTime: true,
   skipDeletionConfirmation: false,
@@ -1016,6 +1035,12 @@ export const DEFAULT_SETTINGS = {
   loadAllHistoryOnSession: false,
   showTimestamps: false,
   disableTipBox: false,
+  resetSkillsOnNewChat: false,
+  showSelectedSkillsOnComposer: true,
+  // Browser right-click entries ("Ask DeepSeek" / "Summarize with DeepSeek").
+  // Off means the background worker tears both items down and never re-creates
+  // them, leaving the native context menu untouched.
+  contextMenuEnabled: true,
   // Composer button visibility overrides. Each value is tri-state:
   //   null  = follow remote config (features.composerButtons)
   //   true  = force show
@@ -1095,16 +1120,18 @@ export const DEFAULT_REMOTE_CONFIG = {
             showVoice: false, showLiveMode: false,
           },
         },
-        // Android app (WebView). Voice works through the native bridge
-        // (SpeechBridge.kt), so the buttons stay. Flip showVoice/showLiveMode
-        // here if the in-app controls ever prove redundant next to the
-        // keyboard's own dictation.
+        // Android app (WebView). Live Voice Mode stays — it runs on the native
+        // bridge (SpeechBridge.kt) and has no equivalent in the host UI. The
+        // mic is redundant next to the keyboard's own dictation, and the
+        // project (folder) button is dropped from the composer row, so both are
+        // off here and in extension/remote-config.json. Folder *upload* stays:
+        // it goes through the native picker and is a tested Android path.
         android: {
           attachMenu: true, deepResearch: true, deepCode: true,
           attachItems: {
             showPlus: true, showUploadFile: true, showUploadFolder: true,
-            showGithub: true, showWeb: true, showOther: true, showProject: true,
-            showVoice: true, showLiveMode: true,
+            showGithub: true, showWeb: true, showOther: true, showProject: false,
+            showVoice: false, showLiveMode: true,
           },
         },
       },
@@ -1133,7 +1160,7 @@ export const DEFAULT_REMOTE_CONFIG = {
     expandToggle: { collapseLongMessages: true },
     questionPanel: { enabled: true },
     codeRunner: { enabled: true },
-    tagManager: { enabled: true, sidebarRename: true },
+    tagManager: { enabled: true, sidebarRename: true, renameOptionIndex: 0 },
     sideBarMenuInjector: { enabled: true },
     selectionMode: { enabled: true },
     whatsNewPopup: { enabled: true },
@@ -1172,6 +1199,8 @@ export const DEFAULT_REMOTE_CONFIG = {
       container: ".ds-dropdown-menu",
       option: ".ds-dropdown-menu-option",
       optionLabel: ".ds-dropdown-menu-option__label",
+      renameOptionIndex: 0,
+      deleteOptionIndex: -1,
     },
     priceInsertion: {
       userMessage: ["_11d6b3a .ds-flex", "ds-flex._78e0558", "[class*='_78e0558']"],

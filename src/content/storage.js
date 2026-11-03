@@ -58,6 +58,16 @@ export async function loadStateFromStorage() {
     state.settings.composerVisibility,
   );
 
+  // Retired setting: DeepSeek's own UI now collapses long user messages, and
+  // running both at once breaks the layout. Drop the stored value so it stops
+  // riding along in exports and in every future save.
+  if (Object.prototype.hasOwnProperty.call(storedSettings, "collapseLongUserMessages")) {
+    delete state.settings.collapseLongUserMessages;
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.settings]: state.settings,
+    });
+  }
+
   setHtmlToMarkdownMaxDepth(state.settings.htmlToMarkdownMaxDepth);
   setMaxChatSessions(state.settings.maxChatSessions);
 
@@ -545,6 +555,9 @@ export function bindStorageChangeListener() {
       state.skills = normalizeSkills(changes[STORAGE_KEYS.skills].newValue);
       if (state.ui) {
         state.ui.refreshSkills();
+      }
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent("bds:skillsChanged"));
       }
       pageConfigChanged = true;
     }

@@ -16,6 +16,9 @@
   import { openNativeFilePicker } from "../files/native-file-input.js";
   import { encryptData, decryptData } from "../../lib/utils/crypto.js";
   import { makeId } from "../../lib/utils/helpers.js";
+  import { triggerBlobDownload } from "../../lib/utils/download.js";
+  import { applyConfigPayload, availableSections } from "../config-sync/apply.js";
+  import { exportSettingsToChat } from "../config-sync/export.js";
   import SnippetList from "./SnippetList.svelte";
   import { collapseAllOpenReasoningBlocks, expandAllCollapsedReasoningBlocks } from "../message-processor.svelte.js";
   import {
@@ -219,7 +222,6 @@
   );
   let tokenPriceDisplay = $state(Boolean(appState.settings.tokenPriceDisplay));
   let showTimestamps = $state(Boolean(appState.settings.showTimestamps));
-  let collapseLongUserMessages = $state(Boolean(appState.settings.collapseLongUserMessages));
   let keepReasoningBlocksOpen = $state(appState.settings.keepReasoningBlocksOpen ?? true);
   let loadAllHistoryOnSession = $state(Boolean(appState.settings.loadAllHistoryOnSession));
   let projectRagEnabled = $state(Boolean(appState.settings.projectRagEnabled));
@@ -273,6 +275,7 @@
   let mcpTestingIndex = $state(-1);
   let mcpInlineMaxChars = $state(Number(appState.settings.mcpInlineMaxChars) || 8000);
   let disableTipBox = $state(Boolean(appState.settings.disableTipBox));
+  let contextMenuEnabled = $state(appState.settings.contextMenuEnabled ?? true);
   // Composer-button visibility overrides (tri-state: null = follow remote).
   let composerVisibility = $state(
     normalizeComposerVisibility(appState.settings.composerVisibility),
@@ -304,6 +307,13 @@
   let exportPasswordError = $state("");
   let isExporting = $state(false);
   let isImporting = $state(false);
+
+  // ── Export to chat ──
+  let showExportChatModal = $state(false);
+  let chatPassword = $state("");
+  let chatIncludeSecrets = $state(false);
+  let chatPasswordError = $state("");
+  let isChatExporting = $state(false);
 
   const EXPORT_SECTIONS = [
     { key: "settings", label: t('drawer.sectionSettings') },
@@ -472,8 +482,8 @@
       deepResearchDeepFetch,
       searchProviders: enabledSearchProviderIds(),
       mcpInlineMaxChars,
-      locale, syncLocale, collapseLongUserMessages, keepReasoningBlocksOpen,
-      loadAllHistoryOnSession, customCSS, disableTipBox,
+      locale, syncLocale, keepReasoningBlocksOpen,
+      loadAllHistoryOnSession, customCSS, disableTipBox, contextMenuEnabled,
       composerVisibility: normalizeComposerVisibility(composerVisibility)
     });
   }
@@ -497,6 +507,83 @@
 
   function closeExportAllModal() {
     showExportAllModal = false;
+  }
+
+  // ── Export to chat ──
+
+  /** Minimum passphrase for the chat path: 4 characters is not protection. */
+  const CHAT_PASSWORD_MIN = 8;
+
+  function openExportChatModal() {
+    chatPassword = "";
+    chatIncludeSecrets = false;
+    chatPasswordError = "";
+    showExportChatModal = true;
+  }
+
+  function closeExportChatModal() {
+    if (isChatExporting) return;
+    showExportChatModal = false;
+    chatPassword = "";
+    chatIncludeSecrets = false;
+    chatPasswordError = "";
+  }
+
+  /** "Stored Memories 7.9 MB, Saved Items 220 KB" for the oversized toast. */
+  function describeBreakdown(breakdown) {
+    if (!Array.isArray(breakdown) || breakdown.length === 0) return "";
+    return breakdown
+      .map((entry) => {
+        const label = EXPORT_SECTIONS.find((s) => s.key === entry.key)?.label || entry.key;
+        const size =
+          entry.bytes >= 1024 * 1024
+            ? `${(entry.bytes / (1024 * 1024)).toFixed(1)} MB`
+            : `${Math.round(entry.bytes / 1024)} KB`;
+        return `${label} ${size}`;
+      })
+      .join(", ");
+  }
+
+  async function doExportChat() {
+    if (chatPassword && chatPassword.length < CHAT_PASSWORD_MIN) {
+      chatPasswordError = t("configSync.passwordTooShort", {
+        min: String(CHAT_PASSWORD_MIN),
+      });
+      return;
+    }
+    chatPasswordError = "";
+    isChatExporting = true;
+
+    try {
+      const result = await exportSettingsToChat({
+        password: chatPassword,
+        includeSecrets: chatIncludeSecrets,
+      });
+
+      if (!result.ok) {
+        const message =
+          result.reason === "too-large"
+            ? t("configSync.tooLarge", {
+                size: `${Math.round(result.bytes / 1024)} KB`,
+                sections: describeBreakdown(result.breakdown),
+              })
+            : t("configSync.sendFailed");
+        if (appState.ui) {
+          appState.ui.showToast(message, result.reason === "too-large" ? 9000 : 6000);
+        }
+        return;
+      }
+
+      showExportChatModal = false;
+      chatPassword = "";
+      chatIncludeSecrets = false;
+      if (appState.ui) appState.ui.showToast(t("configSync.sent"), 5000);
+    } catch (e) {
+      console.error("[BDS] doExportChat error:", e);
+      if (appState.ui) appState.ui.showToast(t("configSync.sendFailed"), 6000);
+    } finally {
+      isChatExporting = false;
+    }
   }
 
   /**
@@ -561,12 +648,12 @@
         blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       }
 
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `bds_backup_${new Date().toISOString().slice(0, 10)}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
+      // Route through the shared helper: on Android a hand-rolled
+      // `<a download>` is a no-op (WebView has no DownloadListener for blob:
+      // URLs), so the backup silently vanished while the success toast still
+      // fired (#208). The helper hands the bytes to AndroidBridge.downloadBlob,
+      // which writes into MediaStore.Downloads.
+      triggerBlobDownload(blob, `bds_backup_${new Date().toISOString().slice(0, 10)}.json`);
 
       closeExportAllModal();
       if (appState.ui) appState.ui.showToast(t('drawer.exportDone'));
@@ -660,80 +747,12 @@
     try {
       const d = importData;
 
-      const plain = (obj) => JSON.parse(JSON.stringify(obj ?? null));
-
       // Sections this file can actually satisfy. A single-section export
       // dropped into "Import All Data" matches none of them, and reporting
       // success for a no-op is worse than reporting nothing happened.
-      const matchedSections = EXPORT_SECTIONS.filter(
-        (section) => selectedSections.has(section.key) && Boolean(d[section.key]),
-      );
+      const matchedSections = availableSections(d, selectedSections);
 
-      if (selectedSections.has("settings") && d.settings) {
-        const oldToken = appState.settings.githubToken;
-        // Preserve migration flags from the destination device so that
-        // loadStateFromStorage()'s upgrade logic remains correct after reload.
-        const migrationsToKeep = {
-          systemPromptBackupDone: appState.settings.systemPromptBackupDone,
-          systemPromptTemplateVersion: appState.settings.systemPromptTemplateVersion,
-          downloadBehaviorVersion: appState.settings.downloadBehaviorVersion,
-        };
-        // Use a reactive spread (not Object.assign) so Svelte 5 tracks the change.
-        appState.settings = {
-          ...appState.settings,
-          ...d.settings,
-          ...migrationsToKeep,
-          githubToken: oldToken,
-          // customSystemPrompts is managed by its own section below; prevent
-          // the settings blob from silently overwriting it regardless of the
-          // user's section selection.
-          customSystemPrompts: appState.settings.customSystemPrompts,
-        };
-        await chrome.storage.local.set({ [STORAGE_KEYS.settings]: plain(appState.settings) });
-      }
-      if (selectedSections.has("customSystemPrompts") && d.customSystemPrompts) {
-        appState.settings = {
-          ...appState.settings,
-          customSystemPrompts: plain(d.customSystemPrompts),
-        };
-        await chrome.storage.local.set({ [STORAGE_KEYS.settings]: plain(appState.settings) });
-      }
-      if (selectedSections.has("cssSnippets") && d.cssSnippets) {
-        appState.cssSnippets = plain(d.cssSnippets);
-        await chrome.storage.local.set({ [STORAGE_KEYS.cssSnippets]: appState.cssSnippets });
-      }
-      if (selectedSections.has("skills") && d.skills) {
-        appState.skills = plain(d.skills);
-        await chrome.storage.local.set({ [STORAGE_KEYS.skills]: appState.skills });
-      }
-      if (selectedSections.has("characters") && d.characters) {
-        appState.characters = plain(d.characters);
-        await chrome.storage.local.set({ [STORAGE_KEYS.characters]: appState.characters });
-      }
-      if (selectedSections.has("memories") && d.memories) {
-        appState.memories = plain(d.memories);
-        await chrome.storage.local.set({ [STORAGE_KEYS.memories]: appState.memories });
-      }
-      if (selectedSections.has("mcpServers") && d.mcpServers) {
-        appState.mcpServers = plain(d.mcpServers);
-        await chrome.storage.local.set({ [STORAGE_KEYS.mcpServers]: appState.mcpServers });
-      }
-      if (selectedSections.has("projects") && d.projects) {
-        appState.projects = plain(d.projects);
-        await chrome.storage.local.set({ [STORAGE_KEYS.projects]: appState.projects });
-      }
-      if (selectedSections.has("projectFiles") && d.projectFiles) {
-        appState.projectFiles = plain(d.projectFiles);
-        await chrome.storage.local.set({ [STORAGE_KEYS.projectFiles]: appState.projectFiles });
-      }
-      if (selectedSections.has("chatTags") && d.chatTags) {
-        appState.chatTags = plain(d.chatTags);
-        await chrome.storage.local.set({ [STORAGE_KEYS.chatTags]: appState.chatTags });
-      }
-      if (selectedSections.has("savedItems") && d.savedItems) {
-        appState.savedItems = plain(d.savedItems);
-        await chrome.storage.local.set({ [STORAGE_KEYS.savedItems]: appState.savedItems });
-      }
+      await applyConfigPayload(d, selectedSections);
 
       // Explicitly refresh the settings form so local $state variables
       // reflect the newly imported values without requiring a page reload.
@@ -821,7 +840,7 @@
       'settings.resetFactory', 'settings.preferredLang',
     ]},
     { key: 'subChat', labelKey: 'settings.subChat', settingKeys: [
-      'settings.collapseLongUserMessages', 'settings.keepReasoningBlocksOpen', 'settings.loadAllHistoryOnSession', 'settings.chatSessionCap',
+      'settings.keepReasoningBlocksOpen', 'settings.loadAllHistoryOnSession', 'settings.chatSessionCap',
     ]},
     { key: 'subComposer', labelKey: 'settings.subComposer', settingKeys: [
       'settings.composerHint', 'settings.composerAttachMenu',
@@ -852,6 +871,7 @@
     { key: 'subIntegrations', labelKey: 'settings.subIntegrations', settingKeys: [
       'settings.markdownMaxDepth', 'settings.githubToken',
       'settings.tokenPriceEstimation', 'settings.showTimestamps',
+      'settings.contextMenuEnabled',
     ]},
     { key: 'subCSS', labelKey: 'settings.subCSS', settingKeys: [
       'settings.customCSS', 'settings.cssPresets',
@@ -1016,7 +1036,6 @@
     maxChatSessions = Number(appState.settings.maxChatSessions) || 500;
     tokenPriceDisplay = Boolean(appState.settings.tokenPriceDisplay);
     showTimestamps = Boolean(appState.settings.showTimestamps);
-    collapseLongUserMessages = Boolean(appState.settings.collapseLongUserMessages);
     keepReasoningBlocksOpen = appState.settings.keepReasoningBlocksOpen ?? true;
     loadAllHistoryOnSession = Boolean(appState.settings.loadAllHistoryOnSession);
     projectRagEnabled = Boolean(appState.settings.projectRagEnabled);
@@ -1033,6 +1052,7 @@
     syncLocale = Boolean(appState.settings.syncLocale);
     customCSS = appState.settings.customCSS || "";
     disableTipBox = Boolean(appState.settings.disableTipBox);
+    contextMenuEnabled = appState.settings.contextMenuEnabled ?? true;
     composerVisibility = normalizeComposerVisibility(appState.settings.composerVisibility);
     composerDefaults = readComposerDefaults();
     mcpInlineMaxChars = Number(appState.settings.mcpInlineMaxChars) || 8000;
@@ -1266,7 +1286,6 @@
     const previousKeepReasoningBlocksOpen = appState.settings.keepReasoningBlocksOpen ?? true;
     appState.settings.tokenPriceDisplay = tokenPriceDisplay;
     appState.settings.showTimestamps = showTimestamps;
-    appState.settings.collapseLongUserMessages = collapseLongUserMessages;
     appState.settings.keepReasoningBlocksOpen = keepReasoningBlocksOpen;
     appState.settings.loadAllHistoryOnSession = loadAllHistoryOnSession;
     appState.settings.projectRagEnabled = projectRagEnabled;
@@ -1287,6 +1306,7 @@
     appState.settings.syncLocale = syncLocale;
     appState.settings.customCSS = customCSS;
     appState.settings.disableTipBox = disableTipBox;
+    appState.settings.contextMenuEnabled = contextMenuEnabled;
     appState.settings.composerVisibility = normalizeComposerVisibility(composerVisibility);
     appState.settings.mcpInlineMaxChars = Math.max(500, Math.min(100000, Math.round(Number(mcpInlineMaxChars) || 8000)));
 
@@ -2046,14 +2066,6 @@
     <div class="bds-sub-content" class:open={subChatOpen}>
       <div class="bds-sub-inner">
         <div class="bds-toggle-row">
-          <span class="bds-toggle-label">{t('settings.collapseLongUserMessages')}</span>
-          <label class="bds-switch">
-            <input id="bds-collapse-user-messages" type="checkbox" bind:checked={collapseLongUserMessages} />
-            <span class="bds-switch-track"></span>
-          </label>
-        </div>
-
-        <div class="bds-toggle-row">
           <span class="bds-toggle-label">{t('settings.keepReasoningBlocksOpen')}</span>
           <label class="bds-switch">
             <input id="bds-keep-reasoning-blocks-open" type="checkbox" bind:checked={keepReasoningBlocksOpen} />
@@ -2546,6 +2558,17 @@
         <p style="font-size: 10px; opacity: 0.5; margin: -8px 0 8px; padding-left: 0;">
           {t('settings.showTimestampsHint')}
         </p>
+
+        <div class="bds-toggle-row">
+          <span class="bds-toggle-label">{t('settings.contextMenuEnabled')}</span>
+          <label class="bds-switch">
+            <input id="bds-context-menu-enabled" type="checkbox" bind:checked={contextMenuEnabled} />
+            <span class="bds-switch-track"></span>
+          </label>
+        </div>
+        <p style="font-size: 10px; opacity: 0.5; margin: -8px 0 8px; padding-left: 0;">
+          {t('settings.contextMenuEnabledHint')}
+        </p>
       </div>
     </div>
     {/if}
@@ -2687,6 +2710,9 @@
             <button type="button" class="bds-btn-outlined" onclick={triggerImportAll}>
               {t('drawer.importAll')}
             </button>
+            <button type="button" class="bds-btn-outlined" onclick={openExportChatModal}>
+              {t('configSync.exportButton')}
+            </button>
             <input type="file" accept=".json" style="display: none;" bind:this={importAllFileInput} onchange={handleImportAll} />
           </div>
         </div>
@@ -2740,6 +2766,47 @@
         <button type="button" class="bds-btn-outlined" onclick={closeExportAllModal}>{t('cancel')}</button>
         <button type="button" class="bds-btn" disabled={isExporting} onclick={doExportAll}>
           {isExporting ? t('exporting') : t('drawer.download')}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showExportChatModal}
+  <div class="bds-modal-overlay" role="dialog" onclick={closeExportChatModal}>
+    <div class="bds-modal" role="document" onclick={(e) => e.stopPropagation()}>
+      <div class="bds-modal-header">
+        <span>{t('configSync.exportTitle')}</span>
+        <button class="bds-modal-close" onclick={closeExportChatModal}>×</button>
+      </div>
+      <div class="bds-modal-body">
+        <p style="margin: 0 0 10px; font-size: 12.5px; opacity: 0.8; line-height: 1.5;">
+          {t('configSync.exportIntro')}
+        </p>
+        <input
+          type="password"
+          class="bds-input"
+          placeholder={t('configSync.passwordPlaceholderOptional')}
+          bind:value={chatPassword}
+        />
+        <p style="margin: 4px 0 10px; font-size: 11.5px; opacity: 0.6; line-height: 1.45;">
+          {t('configSync.passwordOptionalHint', { min: String(CHAT_PASSWORD_MIN) })}
+        </p>
+        <label class="bds-modal-check" style="opacity: {chatPassword ? 1 : 0.5};">
+          <input type="checkbox" bind:checked={chatIncludeSecrets} disabled={!chatPassword} />
+          <span>{t('configSync.includeSecrets')}</span>
+        </label>
+        <p style="margin: 4px 0 0; font-size: 11.5px; opacity: 0.6; line-height: 1.45;">
+          {t('configSync.includeSecretsHint')}
+        </p>
+        {#if chatPasswordError}
+          <span class="bds-modal-error">{chatPasswordError}</span>
+        {/if}
+      </div>
+      <div class="bds-modal-footer">
+        <button type="button" class="bds-btn-outlined" onclick={closeExportChatModal}>{t('cancel')}</button>
+        <button type="button" class="bds-btn" disabled={isChatExporting} onclick={doExportChat}>
+          {isChatExporting ? t('exporting') : t('configSync.send')}
         </button>
       </div>
     </div>

@@ -1,3 +1,17 @@
+<script module>
+  /**
+   * Only one panel may be live at a time.
+   *
+   * The component moves its root out of the composer mount point into the chat
+   * container (see `attachToContainer`), so when the native composer is
+   * re-created the mount point dies while this instance keeps its DOM, its
+   * textarea listener and its poll timer. The scanner then mounts a fresh copy
+   * and the copies stack up above the composer (#197). Disposing the previous
+   * instance on mount keeps the panel single even if a mount slips through.
+   */
+  let activePanel = null;
+</script>
+
 <script>
   import { onMount, onDestroy } from "svelte";
   import { slide } from "svelte/transition";
@@ -8,15 +22,41 @@
 
   let allChunks = $state([]);
   let panelExpanded = $state(false);
+  let showAllFiles = $state(false);
   let isVisible = $state(false);
   let debounceTimer = null;
   let textarea = $state(null);
   let rootEl = $state(null);
   let expandedFiles = $state(new Set());
 
+  let disposed = false;
+
+  /**
+   * Tear down this instance without relying on the scanner holding an unmount
+   * handle: drop the detached root, the poll timer and the textarea listener.
+   * Svelte's `onDestroy` never runs for an instance the scanner forgot.
+   */
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    clearInterval(pollInterval);
+    clearTimeout(debounceTimer);
+    if (prevListenerTextarea) {
+      prevListenerTextarea.removeEventListener("input", handleInput);
+      prevListenerTextarea = null;
+    }
+    if (rootEl) rootEl.remove();
+    if (activePanel === panelHandle) activePanel = null;
+  }
+
+  const panelHandle = { dispose };
+
   const DEBOUNCE_MS = 350;
   const MIN_QUERY_LENGTH = 8;
   const MAX_FILES = 10;
+  // An expanded panel that lists every matched file covers the chat on a
+  // phone. Show a few and let the count chip open the rest.
+  const VISIBLE_FILE_GROUPS = 3;
 
   let totalUniqueFiles = $derived.by(() => {
     const s = new Set();
@@ -43,6 +83,16 @@
       })),
     }));
   });
+
+  let visibleFileGroups = $derived(
+    showAllFiles ? fileGroups : fileGroups.slice(0, VISIBLE_FILE_GROUPS),
+  );
+  let hiddenFileCount = $derived(fileGroups.length - visibleFileGroups.length);
+
+  function togglePanel() {
+    panelExpanded = !panelExpanded;
+    if (!panelExpanded) showAllFiles = false;
+  }
 
   function toggleFile(fileName) {
     const next = new Set(expandedFiles);
@@ -99,11 +149,13 @@
       allChunks = chunks;
       expandedFiles = new Set();
       panelExpanded = false;
+      showAllFiles = false;
       isVisible = true;
       attachToContainer();
     } else {
       isVisible = false;
       panelExpanded = false;
+      showAllFiles = false;
     }
   }
 
@@ -114,12 +166,14 @@
     if (text.length < MIN_QUERY_LENGTH) {
       isVisible = false;
       panelExpanded = false;
+      showAllFiles = false;
       return;
     }
 
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       panelExpanded = false;
+      showAllFiles = false;
       runRagSearch(text);
     }, DEBOUNCE_MS);
   }
@@ -140,6 +194,8 @@
   }
 
   onMount(() => {
+    activePanel?.dispose();
+    activePanel = panelHandle;
     textarea = attachListener();
     attachToContainer();
     pollInterval = setInterval(() => {
@@ -149,11 +205,7 @@
   });
 
   onDestroy(() => {
-    clearInterval(pollInterval);
-    clearTimeout(debounceTimer);
-    if (prevListenerTextarea) {
-      prevListenerTextarea.removeEventListener("input", handleInput);
-    }
+    dispose();
   });
 </script>
 
@@ -161,7 +213,7 @@
   {#if isVisible && allChunks.length > 0}
     <button
       class="bds-rag-header"
-      onclick={() => (panelExpanded = !panelExpanded)}
+      onclick={togglePanel}
       aria-expanded={panelExpanded}
     >
       <span class="bds-rag-header-main">
@@ -174,7 +226,7 @@
 
     {#if panelExpanded}
       <div class="bds-rag-files" transition:slide={{ duration: 200 }}>
-        {#each fileGroups as group (group.fileName)}
+        {#each visibleFileGroups as group (group.fileName)}
           <div class="bds-rag-file-group">
             <button
               class="bds-rag-file-row"
@@ -202,6 +254,11 @@
             {/if}
           </div>
         {/each}
+        {#if hiddenFileCount > 0}
+          <button class="bds-rag-more bds-rag-show-all" onclick={() => (showAllFiles = true)}>
+            {t('ragPreview.showAll', { count: hiddenFileCount })}
+          </button>
+        {/if}
         {#if totalUniqueFiles > MAX_FILES}
           <div class="bds-rag-more">{t('ragPreview.moreFiles', { count: totalUniqueFiles - MAX_FILES })}</div>
         {/if}
@@ -386,6 +443,27 @@
     font-size: 10px;
     opacity: 0.4;
     text-align: center;
+  }
+
+  .bds-rag-show-all {
+    display: block;
+    width: 100%;
+    border: none;
+    background: transparent;
+    color: var(--bds-accent, #4f9bff);
+    font-family: inherit;
+    line-height: inherit;
+    opacity: 0.75;
+    cursor: pointer;
+    transition: background 0.12s, opacity 0.12s;
+    -webkit-appearance: none;
+    appearance: none;
+    box-sizing: border-box;
+  }
+
+  .bds-rag-show-all:hover {
+    background: var(--bds-bg-hover, rgba(255, 255, 255, 0.06));
+    opacity: 1;
   }
 
   @keyframes bds-rag-fadein {
